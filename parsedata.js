@@ -92,10 +92,15 @@ const parsed = itemBlocks.map((block, idx) => {
       }
     }
     
-    // Clean up description
+    // Clean up description - extra normalization to handle multiple spaces
     cleanDesc = cleanDesc.replace(/^\s*/, '').replace(/\s*$/, '');
     let description = 'TWW ' + cleanDescription(cleanDesc);
+    // More aggressive space cleanup - replace multiple spaces/tabs/newlines with single space
     description = description.replace(/\s+/g, ' ').trim();
+    // Additional cleanup for specific patterns like "G RY" -> "GRY"
+    description = description.replace(/\b([A-Z])\s+([A-Z]{2,})\b/g, '$1$2');
+    // Remove spaces around hyphens: "D- BL" -> "D-BL", "LAP- D" -> "LAP-D"
+    description = description.replace(/\s*-\s*/g, '-');
     
     // Validation
     const parsedAmount = parseFloat(amount);
