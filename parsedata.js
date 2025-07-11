@@ -75,32 +75,71 @@ const parsed = itemBlocks.map((block, idx) => {
     
     // Collect remaining description parts
     const remainingLines = block.slice(3);
-    const fullDescription = (descriptionPart + ' ' + remainingLines.join(' ')).trim();
     
-    // Extract SGST from the description (it's usually the last number)
-    const numbers = fullDescription.match(/\d+(?:\.\d+)?/g) || [];
+    // Join description parts with single space, then clean up
+    let fullDescription = (descriptionPart + ' ' + remainingLines.join(' ')).trim();
+    
+    // Simple and direct SGST extraction
+    // Look at the very last token in the original combined description
+    const originalDescPart = thirdMatch[3]; // This is the description part after CGST
+    const originalRemaining = remainingLines.join(' ');
+    const originalCombined = (originalDescPart + ' ' + originalRemaining).trim();
+    
+    // Split into tokens and get the last one
+    const tokens = originalCombined.split(/\s+/).filter(token => token.length > 0);
     let sgst = '0';
-    let cleanDesc = fullDescription;
     
-    if (numbers.length > 0) {
-      // The last number is likely SGST
-      sgst = numbers[numbers.length - 1];
-      // Remove the last occurrence of this number
-      const lastIndex = fullDescription.lastIndexOf(sgst);
-      if (lastIndex !== -1) {
-        cleanDesc = fullDescription.substring(0, lastIndex) + fullDescription.substring(lastIndex + sgst.length);
+    // The last token should be SGST if it's a number
+    if (tokens.length > 0) {
+      const lastToken = tokens[tokens.length - 1];
+      if (/^\d+(?:\.\d+)?$/.test(lastToken)) {
+        sgst = lastToken;
+        // Remove this last token from the description
+        tokens.pop();
+        fullDescription = tokens.join(' ');
       }
     }
     
+    // If no SGST found, default to CGST (common in tax calculations)
+    if (sgst === '0') {
+      sgst = cgst;
+    }
+    
     // Clean up description - extra normalization to handle multiple spaces
-    cleanDesc = cleanDesc.replace(/^\s*/, '').replace(/\s*$/, '');
-    let description = 'TWW ' + cleanDescription(cleanDesc);
+    fullDescription = fullDescription.replace(/^\s*/, '').replace(/\s*$/, '');
+    
+    // Remove any remaining SGST numbers from the description before final processing
+    // This handles cases where SGST might still be in the description
+    if (sgst !== '0') {
+      // Remove the SGST value if it appears in the description
+      const sgstPattern = new RegExp('\\s+' + sgst.replace('.', '\\.') + '(?=\\s|$)', 'g');
+      fullDescription = fullDescription.replace(sgstPattern, '');
+    }
+    
+    let description = 'TWW ' + cleanDescription(fullDescription);
+    
     // More aggressive space cleanup - replace multiple spaces/tabs/newlines with single space
     description = description.replace(/\s+/g, ' ').trim();
-    // Additional cleanup for specific patterns like "G RY" -> "GRY"
-    description = description.replace(/\b([A-Z])\s+([A-Z]{2,})\b/g, '$1$2');
-    // Remove spaces around hyphens: "D- BL" -> "D-BL", "LAP- D" -> "LAP-D"
+    
+    // Fix specific spacing issues:
+    // 1. Remove spaces around hyphens: "D- BL" -> "D-BL", "LAP- D" -> "LAP-D"
     description = description.replace(/\s*-\s*/g, '-');
+    
+    // 2. Remove spaces between number and single letter at end: "24-22-12 M" -> "24-22-12M"
+    description = description.replace(/(\d+)\s+([A-Z])$/g, '$1$2');
+    
+    // 3. Remove spaces between number and single letter after hyphen: "24-22-12 W" -> "24-22-12W"
+    description = description.replace(/(\d+)\s+([A-Z])(?=\s|$)/g, '$1$2');
+    
+    // 4. Additional cleanup for specific patterns like "G RY" -> "GRY"
+    description = description.replace(/\b([A-Z])\s+([A-Z]{2,})\b/g, '$1$2');
+    
+    // 5. FIXED: Remove spaces after hyphens followed by letters/numbers
+    // This handles cases like "FOT18-11-7B P" -> "FOT18-11-7BP" and "18-7-5G RY" -> "18-7-5GRY"
+    description = description.replace(/-(\w+)\s+(\w+)/g, '-$1$2');
+    
+    // 6. ADDITIONAL: Remove any remaining spaces before single letters/numbers at the end
+    description = description.replace(/\s+([A-Z0-9]+)$/g, '$1');
     
     // Validation
     const parsedAmount = parseFloat(amount);
