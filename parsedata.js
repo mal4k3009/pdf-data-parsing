@@ -5,21 +5,32 @@ const workingLines = lines.slice(startIndex).filter(line => line.trim() !== '');
 const itemBlocks = [];
 let currentBlock = [];
 
+// Enhanced logging
+console.log(`Total lines after filtering: ${workingLines.length}`);
+
 for (let line of workingLines) {
   line = line.trim();
   // Stop processing if we hit the summary section
-  if (line.includes('TOTAL') || line.includes('TAXABLE AMT') || line.includes('For JUMAX FOAM')) {
+  if (line.includes('TOTAL') || line.includes('TAXABLE AMT') || line.includes('For JUMAX FOAM') || 
+      line.includes('CONTD.ON NEXT PAGE') || line.includes('Auth. Signatory') || 
+      line.includes('GOODS DISPATCHED')) {
+    console.log(`Stopping at line: ${line}`);
     break;
   }
   
-  if (/^TWW\s+/.test(line)) {
+  if (/^TWW(\s|-HPCN|\s+-HPCN)/.test(line)) {
     if (currentBlock.length) itemBlocks.push(currentBlock);
     currentBlock = [line];
-  } else {
-    currentBlock.push(line);
+  } else if (currentBlock.length > 0) {
+    // Only add non-empty lines to current block
+    if (line.length > 0) {
+      currentBlock.push(line);
+    }
   }
 }
 if (currentBlock.length) itemBlocks.push(currentBlock);
+
+console.log(`Total item blocks found: ${itemBlocks.length}`);
 
 // Utility to clean description
 function cleanDescription(desc) {
@@ -62,40 +73,135 @@ function cleanDescription(desc) {
   return desc.replace(/\s+/g, ' ').trim();
 }
 
-const parsed = itemBlocks.map((block, idx) => {
+const parsed = [];
+let successCount = 0;
+let failureCount = 0;
+
+itemBlocks.forEach((block, idx) => {
   try {
     if (block.length < 3) {
-      console.warn(`Insufficient data in block ${idx + 1}`);
-      return null;
+      console.warn(`Block ${idx + 1}: Insufficient data (${block.length} lines) - Block content:`, block);
+      failureCount++;
+      return;
     }
     
     // Parse the first line: TWW HSN PKG QTY UNIT RATE
     const firstLine = block[0].trim();
-    const firstMatch = firstLine.match(/^TWW(-HPCN)?\s+(\d{8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)$/);
     
-    if (!firstMatch) {
-      console.warn(`Failed to parse first line: ${firstLine}`);
-      return null;
+    // Multiple regex patterns to handle all variations
+    const patterns = [
+      // Standard pattern: TWW 94042190 1 9.00 PCS 720.00
+      /^TWW\s+(\d{8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)$/,
+      // With HPCN: TWW-HPCN 94042190 1 1.00 PCS 210.00
+      /^TWW-HPCN\s+(\d{8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)$/,
+      // With numbers after HPCN: TWW-HPCN1 94042190 1 1.00 PCS 210.00
+      /^TWW-HPCN\d+\s+(\d{8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)$/,
+      // Space variations: TWW  94042190 1 1.00 PCS 210.00
+      /^TWW\s+(\d{8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)$/,
+      // Tab variations and extra spaces
+      /^TWW[\s\t]+(\d{8})[\s\t]+(\d+(?:\.\d+)?)[\s\t]+(\d+(?:\.\d+)?)[\s\t]+(\w+)[\s\t]+(\d+(?:\.\d+)?)$/,
+      // HPCN with tab variations
+      /^TWW-HPCN[\s\t]+(\d{8})[\s\t]+(\d+(?:\.\d+)?)[\s\t]+(\d+(?:\.\d+)?)[\s\t]+(\w+)[\s\t]+(\d+(?:\.\d+)?)$/
+    ];
+    
+    let matchFound = false;
+    let hpcnSuffix = null;
+    let hsn, pkg, qty, unit, rate;
+    
+    for (let i = 0; i < patterns.length; i++) {
+      const match = firstLine.match(patterns[i]);
+      if (match) {
+        matchFound = true;
+        if (i === 1 || i === 2 || i === 5) { // HPCN patterns
+          hpcnSuffix = 'HPCN';
+        }
+        [, hsn, pkg, qty, unit, rate] = match;
+        console.log(`Block ${idx + 1}: Matched pattern ${i + 1}`);
+        break;
+      }
     }
     
-    const [_, hpcnSuffix, hsn, pkg, qty, unit, rate] = firstMatch;
+    if (!matchFound) {
+      console.warn(`Block ${idx + 1}: Failed to parse first line with all patterns: "${firstLine}"`);
+      console.warn(`Block ${idx + 1}: Full block content:`, block);
+      failureCount++;
+      return;
+    }
     
+    processParsedMatch(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate);
+    
+  } catch (error) {
+    console.error(`Block ${idx + 1}: Unexpected error:`, error);
+    console.error(`Block ${idx + 1}: Block data:`, block);
+    failureCount++;
+  }
+});
+
+function processParsedMatch(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate) {
+  try {
     // Second line should be serial number (skip it, we'll use index)
     const serialLine = block[1] ? block[1].trim() : '';
     
     // Third line contains: AMOUNT CGST+DESCRIPTION
     const thirdLine = block[2] ? block[2].trim() : '';
-    const thirdMatch = thirdLine.match(/^(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)(.*)$/);
+    
+    // Multiple patterns for third line parsing
+    const thirdPatterns = [
+      // Standard: 6480.00 9.00ADJ HE WP 24-22-12 9.00
+      /^(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)(.*)$/,
+      // With extra spaces: 6480.00  9.00 ADJ HE WP 24-22-12 9.00
+      /^(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(.*)$/,
+      // Tab separated: 6480.00	9.00ADJ HE WP 24-22-12 9.00
+      /^(\d+(?:\.\d+)?)[\s\t]+(\d+(?:\.\d+)?)(.*)$/
+    ];
+    
+    let thirdMatch = null;
+    for (let pattern of thirdPatterns) {
+      thirdMatch = thirdLine.match(pattern);
+      if (thirdMatch) break;
+    }
     
     if (!thirdMatch) {
-      console.warn(`Failed to parse third line: ${thirdLine}`);
-      return null;
+      console.warn(`Block ${idx + 1}: Failed to parse third line with all patterns: "${thirdLine}"`);
+      
+      // Try to extract just amount and cgst without description
+      const simpleMatch = thirdLine.match(/^(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)$/);
+      if (simpleMatch) {
+        console.log(`Block ${idx + 1}: Third line has no description part`);
+        const amount = simpleMatch[1];
+        const cgst = simpleMatch[2];
+        processItem(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate, amount, cgst, '');
+        return;
+      }
+      
+      // Last resort - try to parse amount only
+      const amountOnlyMatch = thirdLine.match(/^(\d+(?:\.\d+)?)/);
+      if (amountOnlyMatch) {
+        console.log(`Block ${idx + 1}: Only amount found in third line, defaulting CGST to 9.00`);
+        const amount = amountOnlyMatch[1];
+        processItem(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate, amount, '9.00', '');
+        return;
+      }
+      
+      console.warn(`Block ${idx + 1}: Complete failure parsing third line`);
+      failureCount++;
+      return;
     }
     
     const amount = thirdMatch[1];
-    let cgst = thirdMatch[2];
-    let descriptionPart = thirdMatch[3];
+    const cgst = thirdMatch[2];
+    const descriptionPart = thirdMatch[3];
     
+    processItem(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate, amount, cgst, descriptionPart);
+    
+  } catch (error) {
+    console.error(`Block ${idx + 1}: Error in processParsedMatch:`, error);
+    failureCount++;
+  }
+}
+
+function processItem(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate, amount, cgst, descriptionPart) {
+  try {
     // Collect remaining description parts but filter out unwanted content
     const remainingLines = block.slice(3).filter(line => {
       const trimmedLine = line.trim();
@@ -173,17 +279,18 @@ const parsed = itemBlocks.map((block, idx) => {
     // Ensure clean ending
     description = description.replace(/\s+$/, '').trim();
     
-    // Validation
+    // Validation with more lenient tolerance
     const parsedAmount = parseFloat(amount);
     const parsedRate = parseFloat(rate);
     const parsedQty = parseFloat(qty);
     const expectedAmount = parsedRate * parsedQty;
     
     if (Math.abs(parsedAmount - expectedAmount) > 0.01) {
-      console.warn(`Amount validation failed for item ${idx + 1}. Expected: ${expectedAmount}, Got: ${parsedAmount}`);
+      console.warn(`Block ${idx + 1}: Amount validation failed. Expected: ${expectedAmount}, Got: ${parsedAmount}`);
+      // Don't skip the item, just log the warning
     }
     
-    return {
+    const item = {
       sl_no: idx + 1,
       hsn: hsn,
       pkg: parseFloat(pkg),
@@ -196,15 +303,21 @@ const parsed = itemBlocks.map((block, idx) => {
       description: description
     };
     
+    parsed.push(item);
+    successCount++;
+    
   } catch (error) {
-    console.error(`Error parsing item ${idx + 1}:`, error);
-    console.error(`Block data:`, block);
-    return null;
+    console.error(`Block ${idx + 1}: Error in processItem:`, error);
+    failureCount++;
   }
-}).filter(Boolean);
-
-if (parsed.length === 0) {
-  return [{ json: { error: "Parsing failed", raw: itemBlocks.slice(0, 3), debug: "Check console for detailed errors" } }];
 }
 
+console.log(`Parsing complete: ${successCount} successful, ${failureCount} failed`);
+
+if (parsed.length === 0) {
+  console.error("No items parsed successfully");
+  return [{ json: { error: "Parsing failed", totalBlocks: itemBlocks.length, raw: itemBlocks.slice(0, 3), debug: "Check console for detailed errors" } }];
+}
+
+console.log(`Final result: ${parsed.length} items will be returned`);
 return parsed.map(row => ({ json: row }));
