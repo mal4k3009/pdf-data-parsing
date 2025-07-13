@@ -1,6 +1,6 @@
 const rawText = $json.text;
 const lines = rawText.split('\n');
-const startIndex = lines.findIndex(line => /^TWW\s+/.test(line));
+const startIndex = lines.findIndex(line => /^[A-Z][\w\-]*(?:\s*-\s*[A-Z][\w\-]*)*\s+\d{8}\s+/.test(line));
 const workingLines = lines.slice(startIndex).filter(line => line.trim() !== '');
 const itemBlocks = [];
 let currentBlock = [];
@@ -10,18 +10,31 @@ console.log(`Total lines after filtering: ${workingLines.length}`);
 
 for (let line of workingLines) {
   line = line.trim();
-  // Stop processing if we hit the summary section
+  // Stop processing if we hit the FINAL summary section - BUT NOT page continuations
   if (line.includes('TOTAL') || line.includes('TAXABLE AMT') || line.includes('For JUMAX FOAM') || 
-      line.includes('CONTD.ON NEXT PAGE') || line.includes('Auth. Signatory') || 
-      line.includes('GOODS DISPATCHED') || line.includes('Invoice No Date:') || 
-      line.includes('JF/25-26/') || line.includes('Details of Receiver') || 
-      line.includes('Details of Consignee') || line.includes('GSTIN :') || 
-      line.includes('Original For Buyer') || line.includes('SN DESCRIPITION')) {
-    console.log(`Stopping at line: ${line}`);
+      line.includes('Auth. Signatory') || line.includes('GOODS DISPATCHED')) {
+    console.log(`Stopping at final summary line: ${line}`);
     break;
   }
   
-  if (/^TWW(\s|-HPCN|\s+-HPCN)/.test(line)) {
+  // Skip page header/footer lines but continue processing (don't break)
+  if (line.includes('Invoice No Date:') || line.includes('JF/25-26/') || 
+      line.includes('Details of Receiver') || line.includes('Details of Consignee') || 
+      line.includes('GSTIN :') || line.includes('Original For Buyer') || 
+      line.includes('SN DESCRIPITION') || line.includes('CONTD.ON NEXT PAGE') ||
+      line.includes('GST INVOICE') || line.includes('JUMAX FOAM PVT LIMITED') ||
+      line.includes('BULANDSHAHR ROAD') || line.includes('REGD OFF:') ||
+      line.includes('CIN.:') || line.includes('PAN.No:') || 
+      line.includes('MARINE CARGO') || line.includes('BANK Details') ||
+      line.includes('BANK NAME') || line.includes('UNION BANK') ||
+      line.includes('ACCOUNT NO') || line.includes('IFSC CODE') ||
+      line.includes('BANK ADDRESS') || line.includes('R.K.PURAM')) {
+    console.log(`Skipping header/footer line: ${line}`);
+    continue; // Skip this line but continue processing
+  }
+  
+  // Dynamic detection of item lines - look for any prefix followed by 8-digit HSN code
+  if (/^[A-Z][\w\-]*(?:\s*-\s*[A-Z][\w\-]*)*\s+\d{8}\s+/.test(line)) {
     if (currentBlock.length) itemBlocks.push(currentBlock);
     currentBlock = [line];
   } else if (currentBlock.length > 0) {
@@ -35,14 +48,15 @@ if (currentBlock.length) itemBlocks.push(currentBlock);
 
 console.log(`Total item blocks found: ${itemBlocks.length}`);
 
-// Utility to clean description
+// Utility to clean description - ENHANCED VERSION WITH BETTER PAGE TRANSITION DETECTION
 function cleanDescription(desc) {
   const cutMarkers = [
     "JUMAX", "BULANDSHAHAR", "GAUTAM", "REGD", "BANK", "ACCOUNT", "Invoice", 
     "SN DESCRIP", "IFSC", "UBIN", "ONLY", "P.O.No", "DATED", "Vehicle",
     "GST INVOICE", "GSTINVOICE", "Original For Buyer", "FOAM PVT LIMITED",
     "GSTIN", "09AAACJ0130B1ZF", "CONTD.ON NEXT PAGE", "CONTD ON NEXT PAGE",
-    "TWW-HPCN94042190", "92671"
+    "92671", "35 KM STONE", "BULANDSHAHR ROAD", "DADRI", "STATE :", "CODE:",
+    "Details of", "PAN:", "CIN.", "MARINE CARGO", "THE WHITE WILLOW"
   ];
   
   for (const marker of cutMarkers) {
@@ -55,9 +69,8 @@ function cleanDescription(desc) {
   // Remove any remaining unwanted patterns
   desc = desc.replace(/\b\d{5,}\b/g, ''); // Remove long numbers
   desc = desc.replace(/CONTD\.?ON NEXT PAGE/gi, '');
-  desc = desc.replace(/TWW-HPCN\d+/g, '');
   
-  // Remove invoice line continuation patterns - these are the main culprits
+  // CRITICAL FIX: Remove invoice line continuation patterns - these are the main culprits
   // Pattern 1: "9.00 TWW-HPCN1" - remove this specific pattern
   desc = desc.replace(/\s+[\d\.]+\s+TWW-HPCN\d+/gi, '');
   
@@ -72,6 +85,30 @@ function cleanDescription(desc) {
   
   // Pattern 5: Remove standalone numeric patterns that look like "9.00 TWW-HPCN1 2.00 PCS 255.00 510.00 9.00X SMA"
   desc = desc.replace(/\s*[\d\.]+\s+TWW-HPCN\d+\s+[\d\.]+\s+PCS\s+[\d\.]+\s+[\d\.]+\s+[\d\.]+[A-Z\s]*/gi, '');
+  
+  // NEW: Remove specific patterns that appear in page transitions
+  desc = desc.replace(/\s*9\.00\s*THE WHITE WILLOW.*$/gi, '');
+  desc = desc.replace(/\s*9\.00\s*35 KM STONE.*$/gi, '');
+  desc = desc.replace(/\s*9\.00\s*STATE\s*:.*$/gi, '');
+  desc = desc.replace(/\s*9\.00\s*CODE\s*:.*$/gi, '');
+  desc = desc.replace(/\s*9\.00\s*\d{2}[A-Z]{4,}.*$/gi, '');
+  
+  // CRITICAL FIX FOR YOUR SPECIFIC ISSUE: Remove page transition contamination
+  // Pattern: "9.00 5C dadri" or similar where location names appear after numbers
+  desc = desc.replace(/\s*9\.00\s*\d*[A-Z]*\s*dadri.*$/gi, '');
+  desc = desc.replace(/\s*9\.00\s*\d*[A-Z]*\s*DADRI.*$/gi, '');
+  
+  // More aggressive pattern to catch any "9.00 [optional chars] location" pattern
+  desc = desc.replace(/\s*9\.00\s*[A-Z0-9]*\s*(?:dadri|DADRI|gautam|GAUTAM|budh|BUDH|nagar|NAGAR).*$/gi, '');
+  
+  // Remove any trailing "9.00" followed by location/address info
+  desc = desc.replace(/\s*9\.00\s*[A-Z\s\-:\.]*$/gi, '');
+  
+  // Additional cleanup for location contamination without "9.00"
+  desc = desc.replace(/\s*(?:dadri|DADRI|gautam|GAUTAM|budh|BUDH|nagar|NAGAR).*$/gi, '');
+  
+  // Clean up any remaining number-letter combinations that might be contamination
+  desc = desc.replace(/\s*\d+[A-Z]\s*(?:dadri|DADRI).*$/gi, '');
   
   return desc.replace(/\s+/g, ' ').trim();
 }
@@ -103,32 +140,26 @@ itemBlocks.forEach((block, idx) => {
     console.log(`Block ${idx + 1}: Cleaned first line: "${cleanedFirstLine}"`);
     
     const patterns = [
-      // Standard pattern: TWW 94042190 1 9.00 PCS 720.00
-      /^TWW\s+(\d{8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)(?:\s|$)/,
-      // With HPCN: TWW-HPCN 94042190 1 1.00 PCS 210.00
-      /^TWW-HPCN\s+(\d{8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)(?:\s|$)/,
-      // With numbers after HPCN: TWW-HPCN1 94042190 1 1.00 PCS 210.00
-      /^TWW-HPCN\d+\s+(\d{8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)(?:\s|$)/,
-      // Space variations: TWW  94042190 1 1.00 PCS 210.00
-      /^TWW\s+(\d{8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)(?:\s|$)/,
+      // Dynamic pattern: ANY_PREFIX 94042190 1 9.00 PCS 720.00
+      /^([A-Z][\w\-]*(?:\s*-\s*[A-Z][\w\-]*)*)\s+(\d{8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)(?:\s|$)/,
+      // With extra spaces: ANY_PREFIX  94042190 1 1.00 PCS 210.00
+      /^([A-Z][\w\-]*(?:\s*-\s*[A-Z][\w\-]*)*)\s+(\d{8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)(?:\s|$)/,
       // Tab variations and extra spaces
-      /^TWW[\s\t]+(\d{8})[\s\t]+(\d+(?:\.\d+)?)[\s\t]+(\d+(?:\.\d+)?)[\s\t]+(\w+)[\s\t]+(\d+(?:\.\d+)?)(?:\s|$)/,
-      // HPCN with tab variations
-      /^TWW-HPCN[\s\t]+(\d{8})[\s\t]+(\d+(?:\.\d+)?)[\s\t]+(\d+(?:\.\d+)?)[\s\t]+(\w+)[\s\t]+(\d+(?:\.\d+)?)(?:\s|$)/
+      /^([A-Z][\w\-]*(?:\s*-\s*[A-Z][\w\-]*)*)[\s\t]+(\d{8})[\s\t]+(\d+(?:\.\d+)?)[\s\t]+(\d+(?:\.\d+)?)[\s\t]+(\w+)[\s\t]+(\d+(?:\.\d+)?)(?:\s|$)/,
+      // More flexible spacing
+      /^([A-Z][\w\-]*(?:\s*-\s*[A-Z][\w\-]*)*)\s*(\d{8})\s*(\d+(?:\.\d+)?)\s*(\d+(?:\.\d+)?)\s*(\w+)\s*(\d+(?:\.\d+)?)(?:\s|$)/
     ];
     
     let matchFound = false;
-    let hpcnSuffix = null;
+    let extractedPrefix = null;
     let hsn, pkg, qty, unit, rate;
     
     for (let i = 0; i < patterns.length; i++) {
       const match = cleanedFirstLine.match(patterns[i]);
       if (match) {
         matchFound = true;
-        if (i === 1 || i === 2 || i === 5) { // HPCN patterns
-          hpcnSuffix = 'HPCN';
-        }
-        [, hsn, pkg, qty, unit, rate] = match;
+        // Now we capture the prefix as the first group
+        [, extractedPrefix, hsn, pkg, qty, unit, rate] = match;
         
         // CRITICAL FIX: Validate that rate is actually a numeric value and not a date
         if (isNaN(parseFloat(rate)) || rate.includes('/') || rate.length > 10) {
@@ -143,7 +174,7 @@ itemBlocks.forEach((block, idx) => {
           continue; // Try next pattern
         }
         
-        console.log(`Block ${idx + 1}: Matched pattern ${i + 1}, rate: ${rate}`);
+        console.log(`Block ${idx + 1}: Matched pattern ${i + 1}, prefix: "${extractedPrefix}", rate: ${rate}`);
         break;
       }
     }
@@ -154,10 +185,10 @@ itemBlocks.forEach((block, idx) => {
       // Fallback: Try to extract rate from a different position or use manual parsing
       console.warn(`Block ${idx + 1}: Attempting manual rate extraction`);
       
-      // Try to find rate by looking for number followed by decimal pattern before description
-      const manualMatch = cleanedFirstLine.match(/^TWW[-\w]*\s+(\d{8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)/);
+      // Try to find rate by looking for any prefix followed by HSN and other fields
+      const manualMatch = cleanedFirstLine.match(/^([A-Z][\w\-]*(?:\s*-\s*[A-Z][\w\-]*)*)\s+(\d{8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)/);
       if (manualMatch) {
-        [, hsn, pkg, qty, unit, rate] = manualMatch;
+        [, extractedPrefix, hsn, pkg, qty, unit, rate] = manualMatch;
         
         // Validate the manually extracted rate
         if (!isNaN(parseFloat(rate)) && !rate.includes('/') && rate.length <= 10) {
@@ -176,7 +207,7 @@ itemBlocks.forEach((block, idx) => {
       }
     }
     
-    processParsedMatch(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate);
+    processParsedMatch(block, idx, extractedPrefix, hsn, pkg, qty, unit, rate);
     
   } catch (error) {
     console.error(`Block ${idx + 1}: Unexpected error:`, error);
@@ -185,7 +216,7 @@ itemBlocks.forEach((block, idx) => {
   }
 });
 
-function processParsedMatch(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate) {
+function processParsedMatch(block, idx, extractedPrefix, hsn, pkg, qty, unit, rate) {
   try {
     // ADDITIONAL RATE VALIDATION: Double-check rate value before processing
     const rateValue = parseFloat(rate);
@@ -226,7 +257,7 @@ function processParsedMatch(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate) {
         console.log(`Block ${idx + 1}: Third line has no description part`);
         const amount = simpleMatch[1];
         const cgst = simpleMatch[2];
-        processItem(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate, amount, cgst, '');
+        processItem(block, idx, extractedPrefix, hsn, pkg, qty, unit, rate, amount, cgst, '');
         return;
       }
       
@@ -235,7 +266,7 @@ function processParsedMatch(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate) {
       if (amountOnlyMatch) {
         console.log(`Block ${idx + 1}: Only amount found in third line, defaulting CGST to 9.00`);
         const amount = amountOnlyMatch[1];
-        processItem(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate, amount, '9.00', '');
+        processItem(block, idx, extractedPrefix, hsn, pkg, qty, unit, rate, amount, '9.00', '');
         return;
       }
       
@@ -248,7 +279,7 @@ function processParsedMatch(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate) {
     const cgst = thirdMatch[2];
     const descriptionPart = thirdMatch[3];
     
-    processItem(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate, amount, cgst, descriptionPart);
+    processItem(block, idx, extractedPrefix, hsn, pkg, qty, unit, rate, amount, cgst, descriptionPart);
     
   } catch (error) {
     console.error(`Block ${idx + 1}: Error in processParsedMatch:`, error);
@@ -256,7 +287,7 @@ function processParsedMatch(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate) {
   }
 }
 
-function processItem(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate, amount, cgst, descriptionPart) {
+function processItem(block, idx, extractedPrefix, hsn, pkg, qty, unit, rate, amount, cgst, descriptionPart) {
   try {
     // FINAL RATE VALIDATION: Ensure rate is clean numeric value
     let cleanRate = rate;
@@ -285,6 +316,14 @@ function processItem(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate, amount, 
       return trimmedLine !== '' && 
              !trimmedLine.includes('CONTD') && 
              !trimmedLine.includes('NEXT PAGE') &&
+             !trimmedLine.includes('GST INVOICE') &&
+             !trimmedLine.includes('JUMAX FOAM') &&
+             !trimmedLine.includes('BULANDSHAHR') &&
+             !trimmedLine.includes('Details of') &&
+             !trimmedLine.includes('THE WHITE WILLOW') &&
+             !trimmedLine.includes('35 KM STONE') &&
+             !trimmedLine.includes('STATE :') &&
+             !trimmedLine.includes('CODE:') &&
              !trimmedLine.match(/^\d+$/); // Skip lines that are just numbers
     });
     
@@ -293,7 +332,6 @@ function processItem(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate, amount, 
     
     // Clean out any remaining unwanted content
     fullDescription = fullDescription.replace(/CONTD\.?ON NEXT PAGE/gi, '').trim();
-    fullDescription = fullDescription.replace(/TWW-HPCN\d+/g, '').trim();
     
     // Extract SGST - it should be the last numeric token BEFORE cleaning invoice patterns
     const tokens = fullDescription.split(/\s+/).filter(token => token.length > 0);
@@ -312,7 +350,12 @@ function processItem(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate, amount, 
           
           // If it's not part of "X.XX PCS XXX.XX XXXX.XX X.XX" pattern or "X.XX TWW-HPCN" pattern, use it as SGST
           if (!contextStr.match(/[\d\.]+\s+PCS\s+[\d\.]+\s+[\d\.]+\s+[\d\.]+$/) && 
-              !contextStr.match(/[\d\.]+\s+TWW-HPCN\d+$/)) {
+              !contextStr.match(/[\d\.]+\s+TWW-HPCN\d+$/) &&
+              !contextStr.match(/[\d\.]+\s+THE\s+WHITE\s+WILLOW/) &&
+              !contextStr.match(/[\d\.]+\s+35\s+KM\s+STONE/) &&
+              !contextStr.match(/[\d\.]+\s+STATE\s*:/) &&
+              !contextStr.match(/[\d\.]+\s+dadri/i) &&
+              !contextStr.match(/[\d\.]+\s+DADRI/i)) {
             sgst = token;
             // Remove this token from the description
             tokens.splice(i, 1);
@@ -331,30 +374,110 @@ function processItem(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate, amount, 
     // Clean up description AFTER extracting SGST
     fullDescription = fullDescription.replace(/^\s*/, '').replace(/\s*$/, '');
     
-    // Add TWW prefix and clean description
-    let description = 'TWW ' + cleanDescription(fullDescription);
+    // CRITICAL FIX: Use the extracted prefix directly from parsing with proper spacing
+    let description = '';
     
-    // More aggressive space cleanup
+    if (extractedPrefix) {
+      // Clean the full description first
+      const cleanedFullDescription = cleanDescription(fullDescription);
+      
+      // FIXED: Ensure proper spacing between prefix and description
+      if (cleanedFullDescription.trim().length > 0) {
+        description = extractedPrefix + ' ' + cleanedFullDescription;
+      } else {
+        description = extractedPrefix;
+      }
+      
+      console.log(`Block ${idx + 1}: Using extracted prefix: "${extractedPrefix}"`);
+    } else {
+      // Fallback: Extract prefix from original line if not captured during parsing
+      const originalFirstLine = block[0].trim();
+      const prefixMatch = originalFirstLine.match(/^([A-Z][\w\-]*(?:\s*-\s*[A-Z][\w\-]*)*)\s+\d{8}/);
+      
+      if (prefixMatch) {
+        const fallbackPrefix = prefixMatch[1].trim();
+        const cleanedFullDescription = cleanDescription(fullDescription);
+        
+        if (cleanedFullDescription.trim().length > 0) {
+          description = fallbackPrefix + ' ' + cleanedFullDescription;
+        } else {
+          description = fallbackPrefix;
+        }
+        
+        console.log(`Block ${idx + 1}: Using fallback prefix: "${fallbackPrefix}"`);
+      } else {
+        // Last resort: use TWW as default
+        const cleanedFullDescription = cleanDescription(fullDescription);
+        description = 'TWW ' + cleanedFullDescription;
+        console.log(`Block ${idx + 1}: Using default prefix: TWW`);
+      }
+    }
+    
+    // More aggressive space cleanup - BUT preserve the space between prefix and description
     description = description.replace(/\s+/g, ' ').trim();
     
-    // Fix specific spacing issues:
-    description = description.replace(/\s*-\s*/g, '-');
-    description = description.replace(/(\d+)\s+([A-Z])$/g, '$1$2');
-    description = description.replace(/(\d+)\s+([A-Z])(?=\s|$)/g, '$1$2');
-    description = description.replace(/\b([A-Z])\s+([A-Z]{2,})\b/g, '$1$2');
-    description = description.replace(/-(\w+)\s+(\w+)/g, '-$1$2');
-    description = description.replace(/\s+([A-Z0-9]+)$/g, '$1');
-    
-    // Final cleanup to remove any remaining invoice continuation patterns
-    description = description.replace(/\s+[\d\.]+\s+PCS\s+[\d\.]+\s+[\d\.]+\s+[\d\.]+[A-Z\s]*$/gi, '');
-    description = description.replace(/\s+[\d\.]+\s+TWW-HPCN\d+.*$/gi, '');
-    
-    // Only remove trailing "9.00" specifically (which is the SGST/CGST rate that shouldn't be in description)
-    // Don't remove other numbers that might be part of product names
-    description = description.replace(/\s+9\.00$/gi, '');
+    // Fix specific spacing issues but be careful not to merge prefix with description:
+    // Only apply these fixes to the description part, not the prefix
+    const parts = description.split(' ');
+    if (parts.length > 1) {
+      const prefix = parts[0];
+      const descPart = parts.slice(1).join(' ');
+      
+      // Apply fixes only to the description part
+      let fixedDescPart = descPart;
+      fixedDescPart = fixedDescPart.replace(/\s*-\s*/g, '-');
+      fixedDescPart = fixedDescPart.replace(/(\d+)\s+([A-Z])$/g, '$1$2');
+      fixedDescPart = fixedDescPart.replace(/(\d+)\s+([A-Z])(?=\s|$)/g, '$1$2');
+      fixedDescPart = fixedDescPart.replace(/\b([A-Z])\s+([A-Z]{2,})\b/g, '$1$2');
+      fixedDescPart = fixedDescPart.replace(/-(\w+)\s+(\w+)/g, '-$1$2');
+      fixedDescPart = fixedDescPart.replace(/\s+([A-Z0-9]+)$/g, '$1');
+      
+      // Final cleanup to remove any remaining invoice continuation patterns
+      fixedDescPart = fixedDescPart.replace(/\s+[\d\.]+\s+PCS\s+[\d\.]+\s+[\d\.]+\s+[\d\.]+[A-Z\s]*$/gi, '');
+      fixedDescPart = fixedDescPart.replace(/\s+[\d\.]+\s+TWW-HPCN\d+.*$/gi, '');
+      
+      // Remove any remaining page transition contamination
+      fixedDescPart = fixedDescPart.replace(/\s+THE\s+WHITE\s+WILLOW.*$/gi, '');
+      fixedDescPart = fixedDescPart.replace(/\s+35\s+KM\s+STONE.*$/gi, '');
+      fixedDescPart = fixedDescPart.replace(/\s+STATE\s*:.*$/gi, '');
+      fixedDescPart = fixedDescPart.replace(/\s+CODE\s*:.*$/gi, '');
+      
+      // CRITICAL FIX: Remove the specific contamination pattern you're seeing
+      fixedDescPart = fixedDescPart.replace(/\s+dadri.*$/gi, '');
+      fixedDescPart = fixedDescPart.replace(/\s+DADRI.*$/gi, '');
+      
+      // Only remove trailing "9.00" specifically (which is the SGST/CGST rate that shouldn't be in description)
+      fixedDescPart = fixedDescPart.replace(/\s+9\.00$/gi, '');
+      
+      // Reconstruct with proper spacing
+      description = prefix + ' ' + fixedDescPart.trim();
+    }
     
     // Ensure clean ending
     description = description.replace(/\s+$/, '').trim();
+    
+    // Final validation to ensure description doesn't contain page transition artifacts
+    if (description.includes('THE WHITE WILLOW') || description.includes('35 KM STONE') || 
+        description.includes('STATE :') || description.includes('CODE:') ||
+        description.toLowerCase().includes('dadri')) {
+      // Find where the contamination starts and cut it off
+      const contaminationPatterns = [
+        /\s+THE\s+WHITE\s+WILLOW/i,
+        /\s+35\s+KM\s+STONE/i,
+        /\s+STATE\s*:/i,
+        /\s+CODE\s*:/i,
+        /\s+dadri/i,
+        /\s+DADRI/i
+      ];
+      
+      for (const pattern of contaminationPatterns) {
+        const match = description.match(pattern);
+        if (match) {
+          description = description.substring(0, match.index).trim();
+          break;
+        }
+      }
+    }
     
     // Validation with more lenient tolerance
     const parsedAmount = parseFloat(amount);
