@@ -13,7 +13,10 @@ for (let line of workingLines) {
   // Stop processing if we hit the summary section
   if (line.includes('TOTAL') || line.includes('TAXABLE AMT') || line.includes('For JUMAX FOAM') || 
       line.includes('CONTD.ON NEXT PAGE') || line.includes('Auth. Signatory') || 
-      line.includes('GOODS DISPATCHED')) {
+      line.includes('GOODS DISPATCHED') || line.includes('Invoice No Date:') || 
+      line.includes('JF/25-26/') || line.includes('Details of Receiver') || 
+      line.includes('Details of Consignee') || line.includes('GSTIN :') || 
+      line.includes('Original For Buyer') || line.includes('SN DESCRIPITION')) {
     console.log(`Stopping at line: ${line}`);
     break;
   }
@@ -88,20 +91,30 @@ itemBlocks.forEach((block, idx) => {
     // Parse the first line: TWW HSN PKG QTY UNIT RATE
     const firstLine = block[0].trim();
     
-    // Multiple regex patterns to handle all variations
+    // Enhanced regex patterns to handle rate extraction more carefully
+    // Clean the first line to remove any date contamination
+    let cleanedFirstLine = firstLine;
+    // Remove dates in DD/MM/YYYY format that might be contaminating the line
+    cleanedFirstLine = cleanedFirstLine.replace(/\b\d{1,2}\/\d{1,2}\/\d{4}\b/g, '');
+    // Remove extra spaces
+    cleanedFirstLine = cleanedFirstLine.replace(/\s+/g, ' ').trim();
+    
+    console.log(`Block ${idx + 1}: Original first line: "${firstLine}"`);
+    console.log(`Block ${idx + 1}: Cleaned first line: "${cleanedFirstLine}"`);
+    
     const patterns = [
       // Standard pattern: TWW 94042190 1 9.00 PCS 720.00
-      /^TWW\s+(\d{8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)$/,
+      /^TWW\s+(\d{8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)(?:\s|$)/,
       // With HPCN: TWW-HPCN 94042190 1 1.00 PCS 210.00
-      /^TWW-HPCN\s+(\d{8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)$/,
+      /^TWW-HPCN\s+(\d{8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)(?:\s|$)/,
       // With numbers after HPCN: TWW-HPCN1 94042190 1 1.00 PCS 210.00
-      /^TWW-HPCN\d+\s+(\d{8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)$/,
+      /^TWW-HPCN\d+\s+(\d{8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)(?:\s|$)/,
       // Space variations: TWW  94042190 1 1.00 PCS 210.00
-      /^TWW\s+(\d{8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)$/,
+      /^TWW\s+(\d{8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)(?:\s|$)/,
       // Tab variations and extra spaces
-      /^TWW[\s\t]+(\d{8})[\s\t]+(\d+(?:\.\d+)?)[\s\t]+(\d+(?:\.\d+)?)[\s\t]+(\w+)[\s\t]+(\d+(?:\.\d+)?)$/,
+      /^TWW[\s\t]+(\d{8})[\s\t]+(\d+(?:\.\d+)?)[\s\t]+(\d+(?:\.\d+)?)[\s\t]+(\w+)[\s\t]+(\d+(?:\.\d+)?)(?:\s|$)/,
       // HPCN with tab variations
-      /^TWW-HPCN[\s\t]+(\d{8})[\s\t]+(\d+(?:\.\d+)?)[\s\t]+(\d+(?:\.\d+)?)[\s\t]+(\w+)[\s\t]+(\d+(?:\.\d+)?)$/
+      /^TWW-HPCN[\s\t]+(\d{8})[\s\t]+(\d+(?:\.\d+)?)[\s\t]+(\d+(?:\.\d+)?)[\s\t]+(\w+)[\s\t]+(\d+(?:\.\d+)?)(?:\s|$)/
     ];
     
     let matchFound = false;
@@ -109,23 +122,58 @@ itemBlocks.forEach((block, idx) => {
     let hsn, pkg, qty, unit, rate;
     
     for (let i = 0; i < patterns.length; i++) {
-      const match = firstLine.match(patterns[i]);
+      const match = cleanedFirstLine.match(patterns[i]);
       if (match) {
         matchFound = true;
         if (i === 1 || i === 2 || i === 5) { // HPCN patterns
           hpcnSuffix = 'HPCN';
         }
         [, hsn, pkg, qty, unit, rate] = match;
-        console.log(`Block ${idx + 1}: Matched pattern ${i + 1}`);
+        
+        // CRITICAL FIX: Validate that rate is actually a numeric value and not a date
+        if (isNaN(parseFloat(rate)) || rate.includes('/') || rate.length > 10) {
+          console.warn(`Block ${idx + 1}: Invalid rate detected "${rate}", trying alternative parsing`);
+          continue; // Try next pattern
+        }
+        
+        // Additional validation: rate should be reasonable (not a date like 02/28/1901)
+        const rateNum = parseFloat(rate);
+        if (rateNum < 0.01 || rateNum > 1000000) {
+          console.warn(`Block ${idx + 1}: Rate value seems unreasonable "${rate}", trying alternative parsing`);
+          continue; // Try next pattern
+        }
+        
+        console.log(`Block ${idx + 1}: Matched pattern ${i + 1}, rate: ${rate}`);
         break;
       }
     }
     
     if (!matchFound) {
       console.warn(`Block ${idx + 1}: Failed to parse first line with all patterns: "${firstLine}"`);
-      console.warn(`Block ${idx + 1}: Full block content:`, block);
-      failureCount++;
-      return;
+      
+      // Fallback: Try to extract rate from a different position or use manual parsing
+      console.warn(`Block ${idx + 1}: Attempting manual rate extraction`);
+      
+      // Try to find rate by looking for number followed by decimal pattern before description
+      const manualMatch = cleanedFirstLine.match(/^TWW[-\w]*\s+(\d{8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)/);
+      if (manualMatch) {
+        [, hsn, pkg, qty, unit, rate] = manualMatch;
+        
+        // Validate the manually extracted rate
+        if (!isNaN(parseFloat(rate)) && !rate.includes('/') && rate.length <= 10) {
+          const rateNum = parseFloat(rate);
+          if (rateNum >= 0.01 && rateNum <= 1000000) {
+            console.log(`Block ${idx + 1}: Manual extraction successful, rate: ${rate}`);
+            matchFound = true;
+          }
+        }
+      }
+      
+      if (!matchFound) {
+        console.warn(`Block ${idx + 1}: Full block content:`, block);
+        failureCount++;
+        return;
+      }
     }
     
     processParsedMatch(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate);
@@ -139,6 +187,14 @@ itemBlocks.forEach((block, idx) => {
 
 function processParsedMatch(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate) {
   try {
+    // ADDITIONAL RATE VALIDATION: Double-check rate value before processing
+    const rateValue = parseFloat(rate);
+    if (isNaN(rateValue) || rate.includes('/') || rateValue < 0.01 || rateValue > 1000000) {
+      console.error(`Block ${idx + 1}: Invalid rate value "${rate}" detected in processParsedMatch`);
+      failureCount++;
+      return;
+    }
+    
     // Second line should be serial number (skip it, we'll use index)
     const serialLine = block[1] ? block[1].trim() : '';
     
@@ -202,6 +258,27 @@ function processParsedMatch(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate) {
 
 function processItem(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate, amount, cgst, descriptionPart) {
   try {
+    // FINAL RATE VALIDATION: Ensure rate is clean numeric value
+    let cleanRate = rate;
+    if (typeof rate === 'string') {
+      // Remove any non-numeric characters except decimal point
+      cleanRate = rate.replace(/[^\d.]/g, '');
+      const rateNum = parseFloat(cleanRate);
+      
+      // If rate is still invalid, try to derive it from amount and quantity
+      if (isNaN(rateNum) || rateNum < 0.01 || rateNum > 1000000) {
+        const derivedRate = parseFloat(amount) / parseFloat(qty);
+        if (!isNaN(derivedRate) && derivedRate >= 0.01 && derivedRate <= 1000000) {
+          console.log(`Block ${idx + 1}: Derived rate from amount/qty: ${derivedRate}`);
+          cleanRate = derivedRate.toString();
+        } else {
+          console.error(`Block ${idx + 1}: Could not fix invalid rate "${rate}"`);
+          failureCount++;
+          return;
+        }
+      }
+    }
+    
     // Collect remaining description parts but filter out unwanted content
     const remainingLines = block.slice(3).filter(line => {
       const trimmedLine = line.trim();
@@ -281,7 +358,7 @@ function processItem(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate, amount, 
     
     // Validation with more lenient tolerance
     const parsedAmount = parseFloat(amount);
-    const parsedRate = parseFloat(rate);
+    const parsedRate = parseFloat(cleanRate);
     const parsedQty = parseFloat(qty);
     const expectedAmount = parsedRate * parsedQty;
     
@@ -296,7 +373,7 @@ function processItem(block, idx, hpcnSuffix, hsn, pkg, qty, unit, rate, amount, 
       pkg: parseFloat(pkg),
       qty: parseFloat(qty),
       unit: unit,
-      rate: parseFloat(rate),
+      rate: parseFloat(cleanRate), // Use cleaned rate
       amount: parseFloat(amount),
       cgst: parseFloat(cgst),
       sgst: parseFloat(sgst),
